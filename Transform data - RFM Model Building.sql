@@ -1,51 +1,54 @@
-create or replace view customer_360_rfm as                                                                                                      
+create or replace view customer_360_rfm as                        
 with customer_statistic as 
 (
     select  a."CustomerID" as customer,
-            '2022-09-01' - max(a."Purchase_Date") as recency,
-            round(count(a."Transaction_ID") / EXTRACT(YEAR FROM AGE(DATE '2022-09-01', b."created_date"::date))::numeric, 2) as frequency,
-            round(sum(a."GMV") / EXTRACT(YEAR FROM AGE(DATE '2022-09-01', b."created_date"::date))::numeric, 2) as monetary               
+            '2022-09-01'::date - max(a."Purchase_Date") as recency,
+            round(count(a."Transaction_ID") / nullif(EXTRACT(YEAR FROM AGE(DATE '2022-09-01', b."created_date"::date)), 0)::numeric, 2) as frequency,
+            round(sum(a."GMV") / nullif(EXTRACT(YEAR FROM AGE(DATE '2022-09-01', b."created_date"::date)), 0)::numeric, 2) as monetary            
     from
         customer_transaction a
         join customer_registered b on a."CustomerID" = b."ID"
     where
         a."Purchase_Date" is not null
-        and (a."GMV" <> 0)
+        and a."GMV" <> 0
         and a."Purchase_Date" <= '2022-09-01'
-    group by  customer, b.created_date
+    group by customer, b.created_date
 ),
 
-customer_index as 
+customer_percent_rank as 
 (
     select  *,
-            row_number() over(order by recency asc) as r_asc,
-            row_number() over(order by frequency asc) as f_asc,
-            row_number() over(order by monetary asc) as m_asc
+            -- Sử dụng PERCENT_RANK() đúng chuẩn, trả về giá trị từ 0 đến 1
+            percent_rank() over(order by recency asc) as r_pct,
+            percent_rank() over(order by frequency asc) as f_pct,
+            percent_rank() over(order by monetary asc) as m_pct
     from customer_statistic
 ),
 
 customer_rfm_score as 
 (
     select  *,
+            -- Recency: Càng lâu về trước (recency lớn) thì điểm R càng thấp (1), mới mua gần đây (recency nhỏ) điểm cao (4)
             case
-              when r_asc > max(r_asc) over()*0.75 then 1
-              when r_asc > max(r_asc) over()*0.5 then 2
-              when r_asc > max(r_asc) over()*0.25 then 3
+              when r_pct > 0.75 then 1
+              when r_pct > 0.50 then 2
+              when r_pct > 0.25 then 3
               else 4
             end as "R",
+            -- Frequency & Monetary: Giá trị càng cao thì điểm F, M càng cao (4)
             case
-              when f_asc <= max(f_asc) over()*0.25 then 1
-              when f_asc <= max(f_asc) over()*0.5 then 2
-              when f_asc <= max(f_asc) over()*0.75 then 3
+              when f_pct <= 0.25 then 1
+              when f_pct <= 0.50 then 2
+              when f_pct <= 0.75 then 3
               else 4
             end as "F",
             case
-              when m_asc <= max(m_asc) over()*0.25 then 1
-              when m_asc <= max(m_asc) over()*0.5 then 2
-              when m_asc <= max(m_asc) over()*0.75 then 3
+              when m_pct <= 0.25 then 1
+              when m_pct <= 0.50 then 2
+              when m_pct <= 0.75 then 3
               else 4
             end as "M"
-    from customer_index
+    from customer_percent_rank
 ),
 
 customer_rfm as
@@ -66,7 +69,7 @@ select  customer,
         case
             when "RFM" in ('111', '112', '113', '114', '121', '122', '123', '124', '131', '132', '133', '134', '141', '142', '143', '144') 
               then 'At-risk'
-            when "RFM" in ('211', '212', '213', '214', '221', '222', '223', '224', '231', '232', '233', '234', '241', '242', '243', '244')      
+            when "RFM" in ('211', '212', '213', '214', '221', '222', '223', '224', '231', '232', '233', '234', '241', '242', '243', '244')     
               then 'Occasional'
             when "RFM" in ('311', '312', '313', '314', '321', '331', '341', '411', '412', '413', '414', '421', '431', '441')
               then 'Potential'
